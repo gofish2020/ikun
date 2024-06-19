@@ -1,55 +1,119 @@
-package main
+# Golang 实现桌面宠物
 
-import (
-	"bytes"
-	"embed"
-	"fmt"
-	"image"
-	_ "image/png"
-	"io"
-	"io/fs"
-	"log"
-	"math"
-	"math/rand"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
 
-	"crg.eti.br/go/config"
-	"github.com/hajimehoshi/ebiten/v2"
+宠物模型为ji你太美的**坤坤**，效果如下：
 
-	_ "crg.eti.br/go/config/ini"
+1. 宠物会追踪鼠标并移动；
+2. 点击宠物会发出声音并改变形态；
 
-	"github.com/hajimehoshi/ebiten/v2/audio"
-	"github.com/hajimehoshi/ebiten/v2/audio/wav"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
-)
 
-func init() {
-	r = rand.New(rand.NewSource(time.Now().Unix()))
+
+![](<demo.gif>)
+
+项目地址 https://github.com/gofish2020/ikun 欢迎Fork && Star
+
+
+本程序基于 `github.com/hajimehoshi/ebiten` 游戏引擎，我们只需要实现 `Game`接口即可。
+
+![](image.png)
+
+
+## 源码走读
+
+- 读取配置信息
+- 打印Slogan
+- 读取图片+音频资源
+- 创建窗体，并且传入实现了`Game`接口的结构体。这里就是`ikun`结构体
+
+```go
+func main() {
+
+	// 读取配置信息
+	config.PrefixEnv = "IKUN"
+	config.File = "ikun.ini"
+	config.Parse(cfg)
+
+	//打印Slogan
+	fmt.Println("IKun爱坤程序,可以不爱,但别伤害～")
+
+	mSprite = make(map[string]*ebiten.Image)
+	mSound = make(map[string][]byte)
+
+	// 读取 material中的所有的资源（图片/音频）
+	a, _ := fs.ReadDir(f, "material")
+
+	for _, v := range a {
+		// 读取文件内容
+		data, _ := f.ReadFile("material/" + v.Name())
+
+		// 去掉文件名后缀（只剩下文件名）
+		name := strings.TrimSuffix(v.Name(), filepath.Ext(v.Name()))
+		// 文件后缀
+		ext := filepath.Ext(v.Name())
+
+		switch ext {
+		case ".png":
+			// 如果是图片，加载图片为 image.Image
+			img, _, err := image.Decode(bytes.NewReader(data))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			mSprite[name] = ebiten.NewImageFromImage(img) // 转换成 *ebiten.Image 类型
+		case ".wav":
+			// 如果是音频，读取 *wav.Stream
+			stream, err := wav.DecodeWithSampleRate(44100, bytes.NewReader(data))
+			if err != nil {
+				log.Fatal(err)
+			}
+			// 这里的data 应该是pcm原始数据
+			data, err := io.ReadAll(stream)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			mSound[name] = data
+		}
+	}
+
+	audio.NewContext(44100)
+	audio.CurrentContext().NewPlayerFromBytes([]byte{}).Play() // 类似于预热的感觉（可能是库有bug）
+
+	ebiten.SetRunnableOnUnfocused(true) // 游戏界面不显示，依然运行
+	ebiten.SetScreenClearedEveryFrame(false)
+	ebiten.SetTPS(50)            // 窗口刷新频率
+	ebiten.SetVsyncEnabled(true) // 垂直同步
+	ebiten.SetWindowDecorated(false)
+	ebiten.SetWindowFloating(true)                                                      // 置顶显示
+	ebiten.SetWindowMousePassthrough(cfg.MousePassthrough)                              // 鼠标穿透
+	ebiten.SetWindowSize(int(float64(width)*cfg.Scale), int(float64(height)*cfg.Scale)) // 窗口大小
+	ebiten.SetWindowTitle("IKun")
+
+	iKun := &ikun{
+		x:       monitorWidth / 2,
+		y:       monitorHeight / 2,
+		count:   0,
+		min:     50,
+		picName: strconv.Itoa(r.Intn(8)), // 默认显示的图片
+	}
+
+	err := ebiten.RunGameWithOptions(iKun, &ebiten.RunGameOptions{
+		InitUnfocused:     true, // 启动时候，窗体不聚焦
+		ScreenTransparent: true, // 窗体透明
+		SkipTaskbar:       true, // 图片不显示在任务栏
+		X11ClassName:      "IKun",
+		X11InstanceName:   "IKun",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-const (
-	width  = 32
-	height = 32
-)
+```
 
-var (
-	currentplayer *audio.Player = nil
-	mSound        map[string][]byte
-	mSprite       map[string]*ebiten.Image
+看下 `ikun`结构体实现（源码注释的很清晰）
 
-	//go:embed material/*
-	f embed.FS
-
-	monitorWidth, monitorHeight = ebiten.Monitor().Size()
-
-	r *rand.Rand
-
-	cfg = &Config{}
-)
-
+```go
 type ikun struct {
 	// 窗体的屏幕坐标
 	x int
@@ -216,93 +280,28 @@ func playSound(sound []byte) {
 	currentplayer.SetVolume(.3)
 	currentplayer.Play()
 }
+```
 
-type Config struct {
-	Speed            int     `cfg:"speed" cfgDefault:"2" cfgHelper:"The speed of the cat."`
-	Scale            float64 `cfg:"scale" cfgDefault:"2.0" cfgHelper:"The scale of the cat."`
-	Quiet            bool    `cfg:"quiet" cfgDefault:"false" cfgHelper:"Disable sound."`
-	MousePassthrough bool    `cfg:"mousepassthrough" cfgDefault:"false" cfgHelper:"Enable mouse passthrough."`
-}
 
-func main() {
 
-	// 读取配置信息
-	config.PrefixEnv = "IKUN"
-	config.File = "ikun.ini"
-	config.Parse(cfg)
 
-	//打印Slogan
-	fmt.Println("IKun爱坤程序,可以不爱,但别伤害～")
+## 启动参数
 
-	mSprite = make(map[string]*ebiten.Image)
-	mSound = make(map[string][]byte)
+把代码下载到本地直接 `go run main.go`即可直接看到效果
 
-	// 读取 material中的所有的资源（图片/音频）
-	a, _ := fs.ReadDir(f, "material")
+-mousepassthrough 鼠标是否穿透窗体 (default false).
+-quiet 是否静音 (default false)
+-scale 缩放窗体 (default 2.0).
+-speed kunkun移动的像素 (default 2).
+-h Show help.
 
-	for _, v := range a {
-		// 读取文件内容
-		data, _ := f.ReadFile("material/" + v.Name())
 
-		// 去掉文件名后缀（只剩下文件名）
-		name := strings.TrimSuffix(v.Name(), filepath.Ext(v.Name()))
-		// 文件后缀
-		ext := filepath.Ext(v.Name())
 
-		switch ext {
-		case ".png":
-			// 如果是图片，加载图片为 image.Image
-			img, _, err := image.Decode(bytes.NewReader(data))
-			if err != nil {
-				log.Fatal(err)
-			}
+## 参考资料
 
-			mSprite[name] = ebiten.NewImageFromImage(img) // 转换成 *ebiten.Image 类型
-		case ".wav":
-			// 如果是音频，读取 *wav.Stream
-			stream, err := wav.DecodeWithSampleRate(44100, bytes.NewReader(data))
-			if err != nil {
-				log.Fatal(err)
-			}
-			// 这里的data 应该是pcm原始数据
-			data, err := io.ReadAll(stream)
-			if err != nil {
-				log.Fatal(err)
-			}
+参考代码：
+https://github.com/crgimenes/neko
 
-			mSound[name] = data
-		}
-	}
+更多游戏范例：
+https://github.com/sedyh/awesome-ebitengine?tab=readme-ov-file#games
 
-	audio.NewContext(44100)
-	audio.CurrentContext().NewPlayerFromBytes([]byte{}).Play() // 类似于预热的感觉（可能是库有bug）
-
-	ebiten.SetRunnableOnUnfocused(true) // 游戏界面不显示，依然运行
-	ebiten.SetScreenClearedEveryFrame(false)
-	ebiten.SetTPS(50)            // 窗口刷新频率
-	ebiten.SetVsyncEnabled(true) // 垂直同步
-	ebiten.SetWindowDecorated(false)
-	ebiten.SetWindowFloating(true)                                                      // 置顶显示
-	ebiten.SetWindowMousePassthrough(cfg.MousePassthrough)                              // 鼠标穿透
-	ebiten.SetWindowSize(int(float64(width)*cfg.Scale), int(float64(height)*cfg.Scale)) // 窗口大小
-	ebiten.SetWindowTitle("IKun")
-
-	iKun := &ikun{
-		x:       monitorWidth / 2,
-		y:       monitorHeight / 2,
-		count:   0,
-		min:     50,
-		picName: strconv.Itoa(r.Intn(8)), // 默认显示的图片
-	}
-
-	err := ebiten.RunGameWithOptions(iKun, &ebiten.RunGameOptions{
-		InitUnfocused:     true, // 启动时候，窗体不聚焦
-		ScreenTransparent: true, // 窗体透明
-		SkipTaskbar:       true, // 图片不显示在任务栏
-		X11ClassName:      "IKun",
-		X11InstanceName:   "IKun",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-}
